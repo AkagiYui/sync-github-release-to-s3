@@ -12,8 +12,11 @@ dependencies = [
     "types-aiobotocore[essential]>=2.24.2",
 ]
 
-[project.scripts]
-upload-release-to-s3 = "main:cli_main"
+[tool.setuptools]
+py-modules = ["main", "sync"]
 
 [tool.uv]
 dev-dependencies = []
+
+[tool.ruff]
+line-length = 10001

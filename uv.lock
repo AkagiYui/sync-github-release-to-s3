@@ -530,6 +530,9 @@ requires-dist = [
     { name = "types-aiobotocore", extras = ["essential"], specifier = ">=2.24.2" },
 ]
 
+[package.metadata.requires-dev]
+dev = []
+
 [[package]]
 name = "urllib3"
 version = "2.5.0"
