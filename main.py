@@ -9,7 +9,7 @@ import tomllib
 import logging
 import sys
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from sync import execute_sync
+from sync import execute_sync_task as execute_sync
 
 CONFIG_FILE = Path(__file__).parent / "config.toml"
 

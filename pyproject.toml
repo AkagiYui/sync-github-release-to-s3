@@ -7,8 +7,8 @@ requires-python = ">=3.13"
 dependencies = [
     "aiobotocore>=2.24.2",
     "apscheduler>=3.11.0",
-    "boto3>=1.40.18",
     "httpx>=0.28.1",
+    "tomlkit>=0.13.3",
     "types-aiobotocore[essential]>=2.24.2",
 ]
 
@@ -19,4 +19,4 @@ py-modules = ["main", "sync"]
 dev-dependencies = []
 
 [tool.ruff]
-line-length = 10001
+line-length = 320
