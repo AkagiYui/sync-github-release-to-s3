@@ -12,6 +12,7 @@ import tempfile
 import os
 
 from types_aiobotocore_s3 import S3Client
+from types_aiobotocore_s3.type_defs import CompletedPartTypeDef, CompletedMultipartUploadTypeDef
 
 from util import async_retry
 
@@ -108,7 +109,7 @@ async def _download_file_chunked(http_client: httpx.AsyncClient, url: str, file_
         raise
 
 
-async def _upload_part_with_retry_from_file(s3_client: S3Client, s3_bucket: str, s3_key: str, upload_id: str, part_number: int, file_path: str, start_pos: int, chunk_size: int, asset_name: str, max_retries: int = 3) -> dict[str, Any]:
+async def _upload_part_with_retry_from_file(s3_client: S3Client, s3_bucket: str, s3_key: str, upload_id: str, part_number: int, file_path: str, start_pos: int, chunk_size: int, asset_name: str, max_retries: int = 3) -> CompletedPartTypeDef:
     """从文件按需读取并上传单个分片，带重试机制"""
     for retry in range(max_retries):
         try:
@@ -191,7 +192,7 @@ async def _upload_file_chunked(s3_client: S3Client, s3_bucket: str, s3_key: str,
         # 使用信号量控制并发数量
         semaphore = asyncio.Semaphore(max_concurrent_parts)
 
-        async def upload_part_with_semaphore(part_number: int, start_pos: int, part_chunk_size: int) -> dict[str, Any]:
+        async def upload_part_with_semaphore(part_number: int, start_pos: int, part_chunk_size: int) -> CompletedPartTypeDef:
             async with semaphore:
                 return await _upload_part_with_retry_from_file(s3_client, s3_bucket, s3_key, upload_id, part_number, file_path, start_pos, part_chunk_size, asset_name)
 
@@ -201,14 +202,15 @@ async def _upload_file_chunked(s3_client: S3Client, s3_bucket: str, s3_key: str,
         parts = await asyncio.gather(*upload_tasks)
 
         # 按分片号排序（虽然通常已经是有序的）
-        parts.sort(key=lambda x: x["PartNumber"])
+        parts.sort(key=lambda x: x.get("PartNumber", 0))
 
         # 完成分片上传
+        multipart_upload: CompletedMultipartUploadTypeDef = {"Parts": parts}
         await s3_client.complete_multipart_upload(
             Bucket=s3_bucket,
             Key=s3_key,
             UploadId=upload_id,
-            MultipartUpload={"Parts": parts},
+            MultipartUpload=multipart_upload,
         )
 
         logger.info(f"Completed multipart upload for {asset_name} with {len(parts)} parts")
