@@ -8,11 +8,224 @@ from zoneinfo import ZoneInfo
 from aiobotocore.session import get_session
 import httpx
 import tomlkit
+import tempfile
+import os
+
+from types_aiobotocore_s3 import S3Client
+
+from util import async_retry
+
 
 logger = logging.getLogger(__name__)
 
 
-async def download_and_upload_asset(s3_client: Any, http_client: httpx.AsyncClient, s3_bucket: str, s3_base_path: str, asset: dict[str, Any]) -> None: ...
+@async_retry(max_retries=3, delay=2.0, backoff=2.0, exceptions=(httpx.RequestError, httpx.TimeoutException, ConnectionError))
+async def download_and_upload_asset(s3_client: Any, http_client: httpx.AsyncClient, s3_bucket: str, s3_base_path: str, asset: dict[str, Any]) -> None:
+    """下载文件到本地，然后分片上传到 S3"""
+    asset_name = asset["name"]
+    asset_url = asset["browser_download_url"]
+    asset_size = asset["size"]
+    asset_content_type = asset["content_type"]
+    logger.info(f"Downloading asset {asset_name} ({asset_size} bytes) from {asset_url}")
+
+    DOWNLOAD_CHUNK_SIZE = 4 * 1024 * 1024  # download in 4MB chunks
+    UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024  # S3分片上传最小5MB，使用8MB更安全
+
+    s3_key = f"{s3_base_path}/{asset_name}"
+
+    # 创建临时文件
+    with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{asset_name}") as temp_file:
+        temp_file_path = temp_file.name
+
+    try:
+        await _download_file_chunked(http_client, asset_url, temp_file_path, asset_name, asset_size, DOWNLOAD_CHUNK_SIZE)
+        await _upload_file_chunked(s3_client, s3_bucket, s3_key, temp_file_path, asset_content_type, asset_name, UPLOAD_CHUNK_SIZE)
+        logger.info(f"Successfully downloaded and uploaded asset {asset_name}")
+    except Exception as e:
+        logger.error(f"Failed to download and upload asset {asset_name}: {e}")
+        raise  # 重新抛出异常以触发重试机制
+    finally:
+        # 清理临时文件
+        try:
+            if os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+                logger.debug(f"Cleaned up temporary file for {asset_name}")
+        except Exception as cleanup_error:
+            logger.warning(f"Failed to cleanup temporary file for {asset_name}: {cleanup_error}")
+
+
+async def _download_file_chunked(http_client: httpx.AsyncClient, url: str, file_path: str, asset_name: str, expected_size: int | None = None, chunk_size: int | None = None) -> None:
+    """
+    流式分片下载函数，支持缓冲区分块下载
+
+    Args:
+        http_client: HTTP客户端
+        url: 下载URL
+        file_path: 本地文件路径
+        asset_name: 资源名称（用于日志）
+        expected_size: 期望的文件大小，None表示未知大小
+        chunk_size: 分片大小，None使用默认值
+    """
+    # 设置默认chunk_size
+    if chunk_size is None:
+        chunk_size = 4 * 1024 * 1024  # 4MB chunks
+
+    downloaded_size = 0
+    headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"}
+
+    try:
+        async with http_client.stream("GET", url, headers=headers, timeout=None) as response:
+            # 检查HTTP状态码
+            if response.status_code != 200:
+                raise httpx.HTTPStatusError(f"HTTP {response.status_code}", request=response.request, response=response)
+
+            # 以写入模式打开文件
+            with open(file_path, "wb") as f:
+                async for chunk in response.aiter_bytes(chunk_size):
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded_size += len(chunk)
+
+                    # 显示下载进度
+                    if downloaded_size % (chunk_size * 5) == 0:  # 每5个chunk显示一次进度
+                        if expected_size is not None and expected_size > 0:
+                            # 已知文件大小，显示百分比进度
+                            progress = (downloaded_size / expected_size) * 100
+                            logger.info(f"Downloading {asset_name}: {progress:.1f}% ({downloaded_size}/{expected_size} bytes)")
+                        else:
+                            # 未知文件大小，只显示已下载字节数
+                            logger.info(f"Downloading {asset_name}: {downloaded_size} bytes downloaded")
+
+            # 验证下载完整性（仅在已知文件大小时）
+            if expected_size is not None and downloaded_size != expected_size:
+                raise ValueError(f"Download size mismatch for {asset_name}: expected {expected_size}, got {downloaded_size}")
+
+            logger.info(f"Successfully downloaded {asset_name} ({downloaded_size} bytes)")
+
+    except Exception as e:
+        logger.error(f"Failed to download {asset_name}: {e}")
+        raise
+
+
+async def _upload_part_with_retry_from_file(s3_client: S3Client, s3_bucket: str, s3_key: str, upload_id: str, part_number: int, file_path: str, start_pos: int, chunk_size: int, asset_name: str, max_retries: int = 3) -> dict[str, Any]:
+    """从文件按需读取并上传单个分片，带重试机制"""
+    for retry in range(max_retries):
+        try:
+            # 每次上传时才读取对应的文件分片
+            with open(file_path, "rb") as f:
+                f.seek(start_pos)
+                chunk = f.read(chunk_size)
+
+            if not chunk:
+                raise ValueError(f"No data read for part {part_number} at position {start_pos}")
+
+            part_response = await s3_client.upload_part(
+                Bucket=s3_bucket,
+                Key=s3_key,
+                PartNumber=part_number,
+                UploadId=upload_id,
+                Body=chunk,
+            )
+
+            logger.info(f"Uploaded part {part_number} for {asset_name} ({len(chunk)} bytes)")
+            return {
+                "ETag": part_response["ETag"],
+                "PartNumber": part_number,
+            }
+
+        except Exception as part_error:
+            if retry == max_retries - 1:
+                logger.error(f"Part {part_number} upload failed after {max_retries} retries: {part_error}")
+                raise part_error
+            logger.warning(f"Part {part_number} upload failed (retry {retry + 1}/{max_retries}): {part_error}")
+            await asyncio.sleep(2**retry)  # 指数退避
+
+    # 这行代码理论上不会执行到，但为了类型检查添加
+    raise RuntimeError(f"Unexpected error: all retries exhausted for part {part_number}")
+
+
+async def _upload_file_chunked(s3_client: S3Client, s3_bucket: str, s3_key: str, file_path: str, content_type: str, asset_name: str, chunk_size: int, max_concurrent_parts: int = 5) -> None:
+    """分片上传本地文件到S3，支持并行上传"""
+    file_size = os.path.getsize(file_path)
+    logger.info(f"Uploading {asset_name} ({file_size} bytes) to S3 using multipart upload")
+
+    # S3分片上传的最小分片大小是5MB，如果文件小于5MB则直接上传
+    MIN_MULTIPART_SIZE = 5 * 1024 * 1024
+
+    if file_size < MIN_MULTIPART_SIZE:
+        # 小文件直接上传
+        with open(file_path, "rb") as f:
+            s3_response = await s3_client.put_object(
+                Bucket=s3_bucket,
+                Key=s3_key,
+                Body=f,
+                ContentType=content_type,
+            )
+            logger.info(f"Uploaded small file {asset_name} to S3: {s3_response}")
+        return
+
+    # 大文件使用分片上传
+    multipart_response = await s3_client.create_multipart_upload(
+        Bucket=s3_bucket,
+        Key=s3_key,
+        ContentType=content_type,
+    )
+    upload_id = multipart_response["UploadId"]
+
+    try:
+        # 计算分片信息（不预读数据，只计算位置和大小）
+        part_info = []
+        current_pos = 0
+        part_number = 1
+
+        while current_pos < file_size:
+            # 计算当前分片的大小（最后一个分片可能小于chunk_size）
+            current_chunk_size = min(chunk_size, file_size - current_pos)
+            part_info.append((part_number, current_pos, current_chunk_size))
+            current_pos += current_chunk_size
+            part_number += 1
+
+        logger.info(f"File {asset_name} will be uploaded in {len(part_info)} parts with max {max_concurrent_parts} concurrent uploads")
+
+        # 使用信号量控制并发数量
+        semaphore = asyncio.Semaphore(max_concurrent_parts)
+
+        async def upload_part_with_semaphore(part_number: int, start_pos: int, part_chunk_size: int) -> dict[str, Any]:
+            async with semaphore:
+                return await _upload_part_with_retry_from_file(s3_client, s3_bucket, s3_key, upload_id, part_number, file_path, start_pos, part_chunk_size, asset_name)
+
+        # 并行上传所有分片
+        upload_tasks = [upload_part_with_semaphore(part_number, start_pos, part_chunk_size) for part_number, start_pos, part_chunk_size in part_info]
+
+        parts = await asyncio.gather(*upload_tasks)
+
+        # 按分片号排序（虽然通常已经是有序的）
+        parts.sort(key=lambda x: x["PartNumber"])
+
+        # 完成分片上传
+        await s3_client.complete_multipart_upload(
+            Bucket=s3_bucket,
+            Key=s3_key,
+            UploadId=upload_id,
+            MultipartUpload={"Parts": parts},
+        )
+
+        logger.info(f"Completed multipart upload for {asset_name} with {len(parts)} parts")
+
+    except Exception as e:
+        # 如果上传失败，取消分片上传
+        logger.error(f"Multipart upload failed for {asset_name}: {e}")
+        try:
+            await s3_client.abort_multipart_upload(
+                Bucket=s3_bucket,
+                Key=s3_key,
+                UploadId=upload_id,
+            )
+            logger.info(f"Aborted multipart upload for {asset_name}")
+        except Exception as abort_error:
+            logger.error(f"Failed to abort multipart upload for {asset_name}: {abort_error}")
+        raise
 
 
 async def sync_release_to_s3(s3_client: Any, http_client: httpx.AsyncClient, s3_bucket: str, s3_base_path: str, github_owner: str, github_repo: str, release: dict[str, Any]) -> None:
@@ -52,24 +265,35 @@ async def sync_release_to_s3(s3_client: Any, http_client: httpx.AsyncClient, s3_
         ContentType="text/markdown",
     )
     logger.info(f"Uploaded release notes to S3: {s3_response}")
-    
-    # upload source code zip/tarball
+
+    # upload source code zip/tarball using streaming
     source_code_formats = [("zipball_url", "zip", "application/zip"), ("tarball_url", "tar.gz", "application/gzip")]
     for url_key, ext, content_type in source_code_formats:
         source_code_url = release.get(url_key)
         if not source_code_url:
             continue
-        response = await http_client.get(source_code_url)
-        if response.status_code == 200:
-            s3_response = await s3_client.put_object(
-                Bucket=s3_bucket,
-                Key=f"{s3_release_path}/source_code.{ext}",
-                Body=response.content,
-                ContentType=content_type,
-            )
-            logger.info(f"Uploaded source code ({ext}) to S3: {s3_response}")
-        else:
-            logger.error(f"Failed to download source code from {source_code_url}: HTTP {response.status_code}")
+
+        try:
+            # 创建临时文件用于下载源代码
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f"_source_code.{ext}") as temp_file:
+                temp_file_path = temp_file.name
+
+            try:
+                # 使用分片下载源代码文件
+                await _download_file_chunked(http_client, source_code_url, temp_file_path, f"source_code.{ext}")
+
+                # 使用分片上传到S3
+                await _upload_file_chunked(s3_client, s3_bucket, f"{s3_release_path}/source_code.{ext}", temp_file_path, content_type, f"source_code.{ext}", 8 * 1024 * 1024)
+
+                logger.info(f"Successfully downloaded and uploaded source code ({ext})")
+
+            finally:
+                # 清理临时文件
+                if os.path.exists(temp_file_path):
+                    os.unlink(temp_file_path)
+
+        except Exception as e:
+            logger.error(f"Failed to download and upload source code ({ext}) from {source_code_url}: {e}")
 
     # upload assets
     assets = release.get("assets", [])
@@ -111,24 +335,32 @@ async def execute_sync_task(config: dict[str, Any]) -> None:
                 aws_access_key_id=s3_access_key,
                 aws_secret_access_key=s3_secret_key,
             ) as s3_client,
-            httpx.AsyncClient(base_url="https://api.github.com", timeout=None, headers={"Authorization": f"Bearer {github_token}"}) as http_client,
+            httpx.AsyncClient(
+                base_url="https://api.github.com",
+                timeout=httpx.Timeout(
+                    connect=30.0,  # 连接超时30秒
+                    read=600.0,  # 读取超时10分钟（用于大文件下载）
+                    write=60.0,  # 写入超时1分钟
+                    pool=60.0,  # 连接池超时1分钟
+                ),
+                headers={"Authorization": f"Bearer {github_token}"},
+                follow_redirects=True,
+                limits=httpx.Limits(
+                    max_keepalive_connections=10,  # 保持连接数
+                    max_connections=20,  # 最大连接数
+                    keepalive_expiry=30.0,  # 连接保持时间
+                ),
+            ) as http_client,
         ):
-            # Here you would implement the logic to:
-            # 1. Fetch the .metainfo.toml from S3
-            # 2. Fetch the latest releases from GitHub
-            # 3. Compare and find new releases
-            # 4. Download assets from GitHub
-            # 5. Upload assets to S3
-            # 6. Update the .metainfo.toml in S3
             logger.info(f"Syncing releases for {github_owner}/{github_repo} to bucket {s3_bucket}")
 
             # update README.md
-            response = await http_client.get(f"/repos/{github_owner}/{github_owner}/readme")
+            response = await http_client.get(f"/repos/{github_owner}/{github_repo}/readme")
             download_url = response.json().get("download_url", "")
             if download_url:
                 readme_response = await http_client.get(download_url)
                 readme_content = readme_response.text
-                logger.info(f"README content: {readme_content[:100]}...")
+                logger.info(f"README content: {readme_content[:100].replace('\n', ' ')}...")
                 # upload to S3
                 s3_response = await s3_client.put_object(
                     Bucket=s3_bucket,
@@ -151,10 +383,10 @@ async def execute_sync_task(config: dict[str, Any]) -> None:
             # get latest releases from GitHub
             releases_info = (await http_client.get(f"/repos/{github_owner}/{github_repo}/releases")).json()
             # filter releases
-            releases = [r for r in releases_info if (github_release_include_prerelease or not r["prerelease"]) and (github_release_include_draft or not r["draft"])]  # releases that can be synced
+            releases = [r for r in releases_info if (github_release_include_prerelease or not r["prerelease"]) and (github_release_include_draft or not r["draft"])]  # releases that exclude draft/prerelease if not included
             new_releases = [r for r in releases if r["id"] > metainfo["last_synced_id"]]  # releases that are newer than last synced id
-            # releases exclude already synced releases
-            releases_can_sync = []
+
+            releases_can_sync = []  # releases exclude already synced releases
             synced_ids = {synced_r["id"] for synced_r in metainfo.get("synced_releases", [])}
             for new_r in new_releases:
                 if new_r["id"] not in synced_ids:
