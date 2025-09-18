@@ -1,7 +1,10 @@
 """同步业务逻辑模块"""
 
+import asyncio
 import logging
 from typing import Any
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from aiobotocore.session import get_session
 import httpx
 import tomlkit
@@ -9,7 +12,74 @@ import tomlkit
 logger = logging.getLogger(__name__)
 
 
-async def sync_release_to_s3(s3_client: Any, http_client: httpx.AsyncClient, s3_bucket: str, s3_base_path: str, github_owner: str, github_repo: str, release: dict[str, Any]) -> None: ...
+async def download_and_upload_asset(s3_client: Any, http_client: httpx.AsyncClient, s3_bucket: str, s3_base_path: str, asset: dict[str, Any]) -> None: ...
+
+
+async def sync_release_to_s3(s3_client: Any, http_client: httpx.AsyncClient, s3_bucket: str, s3_base_path: str, github_owner: str, github_repo: str, release: dict[str, Any]) -> None:
+    """同步单个 Release 到 S3"""
+    # upload body
+    release_name = release["name"] or release["tag_name"]
+    release_body = release["body"] or ""
+    release_id = release["id"]
+    release_html_url = release["html_url"]
+    release_publish_at = release["published_at"]  # e.g. "2023-10-01T12:34:56Z"
+    # 正确转换UTC时间到上海时区
+    utc_time = datetime.fromisoformat(release_publish_at.replace("Z", "+00:00"))
+    shanghai_time = utc_time.astimezone(ZoneInfo("Asia/Shanghai"))
+    release_publish_time_shanghai = shanghai_time.isoformat()
+    release_is_deaft, release_is_prerelease = release["draft"], release["prerelease"]
+    logger.info(f"syncing release {release_name} (ID: {release_id}) to S3")
+
+    # add release summary to README.md
+    release_summary = f"## {release_name}\n\n"
+    release_summary += f"- Published at: {release_publish_time_shanghai} (Shanghai Time)\n"
+    release_summary += f"- Published at (UTC): {release_publish_at}\n"
+    release_summary += f"- Draft: {release_is_deaft}\n"
+    release_summary += f"- Prerelease: {release_is_prerelease}\n"
+    release_summary += f"- [View on GitHub]({release_html_url})\n\n"
+
+    release_summary += "---\n\n"
+    if release_body:
+        release_summary += release_body + "\n\n"
+    else:
+        release_summary += "_No description provided._\n\n"
+
+    s3_release_path = f"{s3_base_path}/{release_name}"
+    s3_response = await s3_client.put_object(
+        Bucket=s3_bucket,
+        Key=f"{s3_release_path}/README.md",
+        Body=release_summary.encode("utf-8"),
+        ContentType="text/markdown",
+    )
+    logger.info(f"Uploaded release notes to S3: {s3_response}")
+    
+    # upload source code zip/tarball
+    source_code_formats = [("zipball_url", "zip", "application/zip"), ("tarball_url", "tar.gz", "application/gzip")]
+    for url_key, ext, content_type in source_code_formats:
+        source_code_url = release.get(url_key)
+        if not source_code_url:
+            continue
+        response = await http_client.get(source_code_url)
+        if response.status_code == 200:
+            s3_response = await s3_client.put_object(
+                Bucket=s3_bucket,
+                Key=f"{s3_release_path}/source_code.{ext}",
+                Body=response.content,
+                ContentType=content_type,
+            )
+            logger.info(f"Uploaded source code ({ext}) to S3: {s3_response}")
+        else:
+            logger.error(f"Failed to download source code from {source_code_url}: HTTP {response.status_code}")
+
+    # upload assets
+    assets = release.get("assets", [])
+    file_sync_tasks = []
+    for asset in assets:
+        file_sync_tasks.append(download_and_upload_asset(s3_client, http_client, s3_bucket, s3_release_path, asset))
+    await asyncio.gather(*file_sync_tasks)
+
+    logger.info(f"Synced release {release_name} (ID: {release_id}) to S3")
+    return
 
 
 async def execute_sync_task(config: dict[str, Any]) -> None:
@@ -76,7 +146,7 @@ async def execute_sync_task(config: dict[str, Any]) -> None:
                 logger.warning(f".metainfo.toml not found in {s3_bucket}/{s3_base_path}, starting fresh.")
                 metainfo_content = b""
             logger.info(f".metainfo.toml content: {metainfo_content.decode('utf-8')}")
-            metainfo = tomlkit.loads(metainfo_content.decode("utf-8")) if metainfo_content else {"synced_releases": [{"id": -1, "name": "initial"}], "last_synced_id": 0}
+            metainfo = tomlkit.loads(metainfo_content.decode("utf-8")) if metainfo_content else {"synced_releases": [], "last_synced_id": 0}  # {"synced_releases": [{"id": -1, "name": "initial"}], "last_synced_id": 0}
 
             # get latest releases from GitHub
             releases_info = (await http_client.get(f"/repos/{github_owner}/{github_repo}/releases")).json()
