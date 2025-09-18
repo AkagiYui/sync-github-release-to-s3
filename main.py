@@ -35,7 +35,11 @@ async def main():
         s3_access_key = global_config["global"].get("s3_access_key", None)
         s3_secret_key = global_config["global"].get("s3_secret_key", None)
         s3_bucket = global_config["global"].get("s3_bucket", None)
+        
         github_token = global_config["global"].get("github_token", None)
+        github_release_include_prerelease = global_config["global"].get("github_release_include_prerelease", False)
+        github_release_include_draft = global_config["global"].get("github_release_include_draft", False)
+        
         # 将全局配置应用到每个任务配置中（如果任务配置中没有对应的键）
         for config in task_configs:
             config.setdefault("s3_endpoint", s3_endpoint)
@@ -44,6 +48,8 @@ async def main():
             config.setdefault("s3_secret_key", s3_secret_key)
             config.setdefault("s3_bucket", s3_bucket)
             config.setdefault("github_token", github_token)
+            config.setdefault("github_release_include_prerelease", github_release_include_prerelease)
+            config.setdefault("github_release_include_draft", github_release_include_draft)
 
         if not task_configs:
             logger.error("没有配置任何同步任务")
