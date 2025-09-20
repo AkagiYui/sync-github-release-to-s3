@@ -11,7 +11,8 @@ COPY main.py sync.py util.py ./
 RUN uv sync --frozen --no-cache-dir
 
 # 创建非 root 用户
-RUN useradd --create-home --shell /bin/bash app
+RUN adduser -D -s /bin/sh app && \
+    chown -R app:app /app
 USER app
 
 # 暴露配置文件挂载点
