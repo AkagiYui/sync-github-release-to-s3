@@ -1,16 +1,14 @@
-FROM python:3.13-slim
+FROM ghcr.io/astral-sh/uv:python3.13-alpine
 
 # 设置工作目录
 WORKDIR /app
 
-RUN pip install uv
-
 # 复制项目文件
 COPY pyproject.toml uv.lock ./
-COPY main.py sync.py ./
+COPY main.py sync.py util.py ./
 
 # 安装依赖
-RUN uv sync --frozen
+RUN uv sync --frozen --no-cache-dir
 
 # 创建非 root 用户
 RUN useradd --create-home --shell /bin/bash app
@@ -23,4 +21,4 @@ VOLUME ["/app/config.toml"]
 ENV PYTHONUNBUFFERED=1
 
 # 运行应用
-CMD ["uv", "run", "python", "main.py"]
+CMD ["uv", "run", "main.py"]
