@@ -70,6 +70,7 @@ async def main():
                 seconds=check_interval,
                 args=[config],
                 id=job_id,
+                name=job_id,
                 max_instances=1,  # 防止任务重叠,
                 next_run_time=datetime.now(),  # 程序启动后立即执行一次
             )
