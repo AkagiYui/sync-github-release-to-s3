@@ -310,6 +310,8 @@ async def sync_release_to_s3(s3_client: Any, http_client: httpx.AsyncClient, s3_
 
 async def execute_sync_task(config: dict[str, Any]) -> None:
     """执行单个同步任务"""
+    start_time = datetime.now()
+
     s3_endpoint: str = config.get("s3_endpoint")  # type: ignore
     s3_region: str = config.get("s3_region")  # type: ignore
     s3_bucket: str = config.get("s3_bucket")  # type: ignore
@@ -420,5 +422,12 @@ async def execute_sync_task(config: dict[str, Any]) -> None:
             )
             logger.info(f"Uploaded .metainfo.toml to S3: {s3_response}")
 
+        # 记录任务执行时间
+        end_time = datetime.now()
+        execution_time = (end_time - start_time).total_seconds()
+        logger.info(f"任务 {task_id} 执行完成，耗时: {execution_time:.2f} 秒")
+
     except Exception as e:
-        logger.error(f"任务 {task_id} 执行失败: {e}")
+        end_time = datetime.now()
+        execution_time = (end_time - start_time).total_seconds()
+        logger.error(f"任务 {task_id} 执行失败，耗时: {execution_time:.2f} 秒，错误: {e}")

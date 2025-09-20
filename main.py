@@ -56,7 +56,13 @@ async def main():
             sys.exit(1)
 
         # 配置APScheduler
-        scheduler = AsyncIOScheduler()
+        scheduler = AsyncIOScheduler(
+            job_defaults={
+                'coalesce': True,  # 合并错过的任务执行
+                'max_instances': 1,  # 防止任务重叠
+                'misfire_grace_time': 300,  # 允许5分钟的延迟容忍
+            }
+        )
 
         logger.info(f"启动APScheduler任务调度系统：{len(task_configs)} 个配置，检查间隔 {check_interval} 秒")
 
@@ -71,7 +77,6 @@ async def main():
                 args=[config],
                 id=job_id,
                 name=job_id,
-                max_instances=1,  # 防止任务重叠,
                 next_run_time=datetime.now(),  # 程序启动后立即执行一次
             )
 
