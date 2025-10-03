@@ -1,7 +1,7 @@
 [project]
-name = "upload-release-to-s3"
+name = "sync-github-release-to-s3"
 version = "0.1.0"
-description = "Sync GitHub releases to S3 storage"
+description = "Sync GitHub releases to S3 storage."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

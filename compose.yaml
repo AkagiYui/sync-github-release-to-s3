@@ -1,0 +1,41 @@
+services:
+  sync-github-release-to-s3:
+    build:
+      context: .
+      dockerfile: Containerfile
+    container_name: sync-github-release-to-s3
+    restart: unless-stopped
+    volumes:
+      # 只读方式映射配置文件
+      - ./config.toml:/app/config.toml:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+    # 如果需要健康检查，可以取消注释以下部分
+    # healthcheck:
+    #   test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+    #   start_period: 40s
+    
+    # 资源限制（可选）
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.1'
+    
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# 如果需要网络隔离，可以定义自定义网络
+# networks:
+#   upload-release-network:
+#     driver: bridge

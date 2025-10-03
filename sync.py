@@ -110,7 +110,7 @@ async def _download_file_chunked(http_client: httpx.AsyncClient, url: str, file_
         raise
 
 
-async def _upload_part_with_retry_from_file(s3_client: S3Client, s3_bucket: str, s3_key: str, upload_id: str, part_number: int, file_path: str, start_pos: int, chunk_size: int, asset_name: str, max_retries: int = 3) -> CompletedPartTypeDef:
+async def _upload_part_with_retry_from_file(s3_client: S3Client, s3_bucket: str, s3_key: str, upload_id: str, part_number: int, part_count: int, file_path: str, start_pos: int, chunk_size: int, asset_name: str, max_retries: int = 3) -> CompletedPartTypeDef:
     """从文件按需读取并上传单个分片，带重试机制"""
     for retry in range(max_retries):
         try:
@@ -130,7 +130,7 @@ async def _upload_part_with_retry_from_file(s3_client: S3Client, s3_bucket: str,
                 Body=chunk,
             )
 
-            logger.info(f"Uploaded part {part_number} for {asset_name} ({len(chunk)} bytes)")
+            logger.info(f"Uploaded part {part_number}/{part_count} for {asset_name} ({len(chunk)} bytes)")
             return {
                 "ETag": part_response["ETag"],
                 "PartNumber": part_number,
@@ -188,14 +188,15 @@ async def _upload_file_chunked(s3_client: S3Client, s3_bucket: str, s3_key: str,
             current_pos += current_chunk_size
             part_number += 1
 
-        logger.info(f"File {asset_name} will be uploaded in {len(part_info)} parts with max {max_concurrent_parts} concurrent uploads")
+        part_count = len(part_info)
+        logger.info(f"File {asset_name} will be uploaded in {part_count} parts with max {max_concurrent_parts} concurrent uploads")
 
         # 使用信号量控制并发数量
         semaphore = asyncio.Semaphore(max_concurrent_parts)
 
         async def upload_part_with_semaphore(part_number: int, start_pos: int, part_chunk_size: int) -> CompletedPartTypeDef:
             async with semaphore:
-                return await _upload_part_with_retry_from_file(s3_client, s3_bucket, s3_key, upload_id, part_number, file_path, start_pos, part_chunk_size, asset_name)
+                return await _upload_part_with_retry_from_file(s3_client, s3_bucket, s3_key, upload_id, part_number, part_count, file_path, start_pos, part_chunk_size, asset_name)
 
         # 并行上传所有分片
         upload_tasks = [upload_part_with_semaphore(part_number, start_pos, part_chunk_size) for part_number, start_pos, part_chunk_size in part_info]
@@ -325,7 +326,7 @@ async def sync_release_to_s3(s3_client: Any, http_client: httpx.AsyncClient, s3_
     # upload source code zip/tarball using streaming
     source_code_formats = [("zipball_url", "zip", "application/zip"), ("tarball_url", "tar.gz", "application/gzip")]
     for url_key, ext, content_type in source_code_formats:
-        source_code_url = release.get(url_key)
+        source_code_url = release.get(url_key, None)
         if not source_code_url:
             continue
 

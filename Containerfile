@@ -5,7 +5,7 @@ WORKDIR /app
 
 # 复制项目文件
 COPY pyproject.toml uv.lock ./
-COPY main.py sync.py util.py ./
+COPY main.py sync.py util.py github.py ./
 
 # 安装依赖
 RUN uv sync --frozen --no-cache-dir
