@@ -14,6 +14,7 @@ import os
 from types_aiobotocore_s3 import S3Client
 from types_aiobotocore_s3.type_defs import CompletedPartTypeDef, CompletedMultipartUploadTypeDef
 
+from github import GitHubAsset, GitHubRelease, OfficialGitHubClient
 from util import async_retry
 
 
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 @async_retry(max_retries=3, delay=2.0, backoff=2.0, exceptions=(httpx.RequestError, httpx.TimeoutException, ConnectionError))
-async def download_and_upload_asset(s3_client: Any, http_client: httpx.AsyncClient, s3_bucket: str, s3_base_path: str, asset: dict[str, Any]) -> None:
+async def download_and_upload_asset(s3_client: Any, http_client: httpx.AsyncClient, s3_bucket: str, s3_base_path: str, asset: GitHubAsset) -> None:
     """下载文件到本地，然后分片上传到 S3"""
     asset_name = asset["name"]
     asset_url = asset["browser_download_url"]
@@ -230,7 +231,7 @@ async def _upload_file_chunked(s3_client: S3Client, s3_bucket: str, s3_key: str,
         raise
 
 
-async def sync_release_to_s3(s3_client: Any, http_client: httpx.AsyncClient, s3_bucket: str, s3_base_path: str, github_owner: str, github_repo: str, release: dict[str, Any]) -> None:
+async def sync_release_to_s3(s3_client: Any, http_client: httpx.AsyncClient, s3_bucket: str, s3_base_path: str, github_owner: str, github_repo: str, release: GitHubRelease) -> None:
     """同步单个 Release 到 S3"""
     # upload body
     release_name = release["name"] or release["tag_name"]
@@ -252,6 +253,59 @@ async def sync_release_to_s3(s3_client: Any, http_client: httpx.AsyncClient, s3_
     release_summary += f"- Draft: {release_is_deaft}\n"
     release_summary += f"- Prerelease: {release_is_prerelease}\n"
     release_summary += f"- [View on GitHub]({release_html_url})\n\n"
+
+    # Add assets table if assets exist
+    assets = release.get("assets", [])
+    if assets:
+        release_summary += "### Assets\n\n"
+        release_summary += "| File Name | Size | Content Type | Downloads | Digest | Created At |\n"
+        release_summary += "|-----------|------|--------------|-----------|--------|------------|\n"
+
+        for asset in assets:
+            asset_name = asset.get("name", "N/A")
+            asset_size = asset.get("size", 0)
+            asset_content_type = asset.get("content_type", "N/A")
+            asset_download_count = asset.get("download_count", 0)
+            asset_created_at = asset.get("created_at", "N/A")
+            asset_browser_download_url = asset.get("browser_download_url", "")
+            asset_digest = asset.get("digest", "N/A")
+
+            # Format file size in human readable format
+            if asset_size >= 1024 * 1024 * 1024:  # GB
+                size_str = f"{asset_size / (1024 * 1024 * 1024):.2f} GB"
+            elif asset_size >= 1024 * 1024:  # MB
+                size_str = f"{asset_size / (1024 * 1024):.2f} MB"
+            elif asset_size >= 1024:  # KB
+                size_str = f"{asset_size / 1024:.2f} KB"
+            else:
+                size_str = f"{asset_size} B"
+
+            # Format created_at time (convert from UTC to Shanghai time if possible)
+            try:
+                if asset_created_at != "N/A":
+                    utc_time = datetime.fromisoformat(asset_created_at.replace("Z", "+00:00"))
+                    shanghai_time = utc_time.astimezone(ZoneInfo("Asia/Shanghai"))
+                    created_at_str = shanghai_time.strftime("%Y-%m-%d %H:%M:%S")
+                else:
+                    created_at_str = "N/A"
+            except Exception:
+                created_at_str = asset_created_at
+
+            # Create clickable file name if download URL is available
+            if asset_browser_download_url:
+                file_name_display = f"[{asset_name}]({asset_browser_download_url})"
+            else:
+                file_name_display = asset_name
+
+            # Format digest - show full digest in code format for better readability
+            if asset_digest and asset_digest != "N/A":
+                digest_display = f"`{asset_digest}`"
+            else:
+                digest_display = "N/A"
+
+            release_summary += f"| {file_name_display} | {size_str} | {asset_content_type} | {asset_download_count} | {digest_display} | {created_at_str} |\n"
+
+        release_summary += "\n"
 
     release_summary += "---\n\n"
     if release_body:
@@ -357,13 +411,10 @@ async def execute_sync_task(config: dict[str, Any]) -> None:
             ) as http_client,
         ):
             logger.info(f"Syncing releases for {github_owner}/{github_repo} to bucket {s3_bucket}")
+            github_api = OfficialGitHubClient(http_client)
 
             # update README.md
-            response = await http_client.get(f"/repos/{github_owner}/{github_repo}/readme")
-            download_url = response.json().get("download_url", "")
-            if download_url:
-                readme_response = await http_client.get(download_url)
-                readme_content = readme_response.text
+            if readme_content := await github_api.get_readme_text(github_owner, github_repo):
                 logger.info(f"README content: {readme_content[:100].replace('\n', ' ')}...")
                 # upload to S3
                 s3_response = await s3_client.put_object(
@@ -381,16 +432,16 @@ async def execute_sync_task(config: dict[str, Any]) -> None:
             except s3_client.exceptions.NoSuchKey:
                 logger.warning(f".metainfo.toml not found in {s3_bucket}/{s3_base_path}, starting fresh.")
                 metainfo_content = b""
-            logger.info(f".metainfo.toml content: {metainfo_content.decode('utf-8')}")
+            logger.info(f"{task_id} .metainfo.toml content: {metainfo_content.decode('utf-8')}")
             metainfo = tomlkit.loads(metainfo_content.decode("utf-8")) if metainfo_content else {"synced_releases": [], "last_synced_id": 0}  # {"synced_releases": [{"id": -1, "name": "initial"}], "last_synced_id": 0}
 
             # get latest releases from GitHub
-            releases_info = (await http_client.get(f"/repos/{github_owner}/{github_repo}/releases")).json()
+            releases_info = await github_api.get_releases(github_owner, github_repo)
             # filter releases
             releases = [r for r in releases_info if (github_release_include_prerelease or not r["prerelease"]) and (github_release_include_draft or not r["draft"])]  # releases that exclude draft/prerelease if not included
             new_releases = [r for r in releases if r["id"] > metainfo["last_synced_id"]]  # releases that are newer than last synced id
 
-            releases_can_sync = []  # releases exclude already synced releases
+            releases_can_sync: list[GitHubRelease] = []  # releases exclude already synced releases
             synced_ids = {synced_r["id"] for synced_r in metainfo.get("synced_releases", [])}
             for new_r in new_releases:
                 if new_r["id"] not in synced_ids:
