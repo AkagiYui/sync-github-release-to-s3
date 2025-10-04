@@ -19,6 +19,7 @@ from util import async_retry
 
 
 logger = logging.getLogger(__name__)
+USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
 
 
 @async_retry(max_retries=3, delay=2.0, backoff=2.0, exceptions=(httpx.RequestError, httpx.TimeoutException, ConnectionError))
@@ -73,7 +74,7 @@ async def _download_file_chunked(http_client: httpx.AsyncClient, url: str, file_
         chunk_size = 4 * 1024 * 1024  # 4MB chunks
 
     downloaded_size = 0
-    headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"}
+    headers = {"User-Agent": USER_AGENT}
 
     try:
         async with http_client.stream("GET", url, headers=headers, timeout=None) as response:
@@ -375,7 +376,7 @@ async def execute_sync_task(config: dict[str, Any]) -> None:
     s3_base_path: str = config.get("s3_base_path", "")  # type: ignore
 
     github_client_type: ClientType = config.get("github_client_type", "official")  # noqa: F821
-    github_owner: str = config.get("github_owner")  # type: ignore
+    github_owner: str = config.get("github_owner", "")  # type: ignore
     github_repo: str = config.get("github_repo")  # type: ignore
     github_token: str = config.get("github_token")  # type: ignore
     github_release_include_prerelease = config.get("github_release_include_prerelease", False)
@@ -402,7 +403,7 @@ async def execute_sync_task(config: dict[str, Any]) -> None:
                     write=60.0,  # 写入超时1分钟
                     pool=60.0,  # 连接池超时1分钟
                 ),
-                headers={"Authorization": f"Bearer {github_token}"},
+                headers={"Authorization": f"Bearer {github_token}", "User-Agent": USER_AGENT},
                 follow_redirects=True,
                 limits=httpx.Limits(
                     max_keepalive_connections=10,  # 保持连接数

@@ -65,9 +65,9 @@ async def main():
         # 配置APScheduler
         scheduler = AsyncIOScheduler(
             job_defaults={
-                'coalesce': True,  # 合并错过的任务执行
-                'max_instances': 1,  # 防止任务重叠
-                'misfire_grace_time': 300,  # 允许5分钟的延迟容忍
+                "coalesce": True,  # 合并错过的任务执行
+                "max_instances": 1,  # 防止任务重叠
+                "misfire_grace_time": 300,  # 允许5分钟的延迟容忍
             }
         )
 
