@@ -7,6 +7,7 @@ s3_access_key = ""
 s3_secret_key = ""
 s3_bucket = ""
 github_token = ""
+github_client_type = "official" # "official" or "yyb"
 github_release_include_prerelease = false
 github_release_include_draft = false
 
@@ -18,8 +19,9 @@ github_release_include_draft = false
 # s3_bucket = ""
 s3_base_path = "/github-sync"
 
+#github_client_type = "official" # "official" or "yyb"
 github_owner = "localsend"
 github_repo = "localsend"
 #github_release_include_prerelease = false
 #github_release_include_draft = false
-# github_token = ""
+#github_token = ""

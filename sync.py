@@ -14,7 +14,7 @@ import os
 from types_aiobotocore_s3 import S3Client
 from types_aiobotocore_s3.type_defs import CompletedPartTypeDef, CompletedMultipartUploadTypeDef
 
-from github import GitHubAsset, GitHubRelease, OfficialGitHubClient
+from github import ClientType, GitHubAsset, GitHubRelease, get_github_client_class_by_type
 from util import async_retry
 
 
@@ -374,6 +374,7 @@ async def execute_sync_task(config: dict[str, Any]) -> None:
     s3_secret_key: str = config.get("s3_secret_key")  # type: ignore
     s3_base_path: str = config.get("s3_base_path", "")  # type: ignore
 
+    github_client_type: ClientType = config.get("github_client_type", "official")  # noqa: F821
     github_owner: str = config.get("github_owner")  # type: ignore
     github_repo: str = config.get("github_repo")  # type: ignore
     github_token: str = config.get("github_token")  # type: ignore
@@ -395,7 +396,6 @@ async def execute_sync_task(config: dict[str, Any]) -> None:
                 aws_secret_access_key=s3_secret_key,
             ) as s3_client,
             httpx.AsyncClient(
-                base_url="https://api.github.com",
                 timeout=httpx.Timeout(
                     connect=30.0,  # 连接超时30秒
                     read=600.0,  # 读取超时10分钟（用于大文件下载）
@@ -412,7 +412,7 @@ async def execute_sync_task(config: dict[str, Any]) -> None:
             ) as http_client,
         ):
             logger.info(f"Syncing releases for {github_owner}/{github_repo} to bucket {s3_bucket}")
-            github_api = OfficialGitHubClient(http_client)
+            github_api = get_github_client_class_by_type(github_client_type)(http_client)
 
             # update README.md
             if readme_content := await github_api.get_readme_text(github_owner, github_repo):

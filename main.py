@@ -36,6 +36,7 @@ async def main():
         s3_secret_key = global_config["global"].get("s3_secret_key", None)
         s3_bucket = global_config["global"].get("s3_bucket", None)
         
+        github_client_type = global_config["global"].get("github_client_type", "official")
         github_token = global_config["global"].get("github_token", None)
         github_release_include_prerelease = global_config["global"].get("github_release_include_prerelease", False)
         github_release_include_draft = global_config["global"].get("github_release_include_draft", False)
@@ -47,6 +48,7 @@ async def main():
             config.setdefault("s3_access_key", s3_access_key)
             config.setdefault("s3_secret_key", s3_secret_key)
             config.setdefault("s3_bucket", s3_bucket)
+            config.setdefault("github_client_type", github_client_type)
             config.setdefault("github_token", github_token)
             config.setdefault("github_release_include_prerelease", github_release_include_prerelease)
             config.setdefault("github_release_include_draft", github_release_include_draft)
