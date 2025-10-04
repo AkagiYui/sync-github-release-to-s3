@@ -1,6 +1,7 @@
 [global]
 check_interval = 600 # seconds
 # configuration below can be overridden in each task
+enable = true
 s3_endpoint = ""
 s3_region = ""
 s3_access_key = ""
@@ -12,6 +13,7 @@ github_release_include_prerelease = false
 github_release_include_draft = false
 
 [[tasks]]
+# enable = false
 # s3_endpoint = ""
 # s3_region = ""
 # s3_access_key = ""
@@ -19,9 +21,9 @@ github_release_include_draft = false
 # s3_bucket = ""
 s3_base_path = "/github-sync"
 
-#github_client_type = "official" # "official" or "yyb"
+# github_client_type = "official" # "official" or "yyb"
 github_owner = "localsend"
 github_repo = "localsend"
-#github_release_include_prerelease = false
-#github_release_include_draft = false
-#github_token = ""
+# github_release_include_prerelease = false
+# github_release_include_draft = false
+# github_token = ""
