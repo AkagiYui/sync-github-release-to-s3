@@ -133,7 +133,7 @@ class YybMockGithubClient(GitHubClient):
                                 "name": version_name,
                                 "tag_name": version_name,
                                 "body": version_name,
-                                "html_url": f"{self.http_client.base_url}/appdetail/{app_id}",
+                                "html_url": f"{self.BASE_URL}/appdetail/{repo}",
                                 "draft": False,
                                 "prerelease": False,
                                 "published_at": self.transform_time(update_time),
